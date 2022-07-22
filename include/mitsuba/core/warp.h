@@ -512,7 +512,7 @@ MI_INLINE Vector<Value, 3> square_to_beckmann(const Point<Value, 2> &sample,
 #endif
 }
 
-/// Inverse of the mapping \ref square_to_uniform_cone
+/// Inverse of the mapping \ref square_to_beckmann
 template <typename Value>
 MI_INLINE Point<Value, 2> beckmann_to_square(const Vector<Value, 3> &v, const Value &alpha) {
     Point<Value, 2> p(v.x(), v.y());
@@ -537,6 +537,27 @@ MI_INLINE Value square_to_beckmann_pdf(const Vector<Value, 3> &m,
     Value result = dr::exp(-dr::sqr(temp)) / (dr::Pi<Value> * dr::sqr(alpha * ct) * ct);
 
     return dr::select(ct < 1e-9f, 0.f, result);
+}
+
+// =======================================================================
+
+/// Warp a uniformly distributed square sample to a GGX distribution
+template <typename Value>
+MI_INLINE Vector<Value, 3> square_to_ggx(const Point<Value, 2> &sample,
+                                         const Value &alpha) {
+    auto [sin_phi, cos_phi] = dr::sincos(dr::TwoPi<Value> * sample.y());
+    Value tan_theta_2 = alpha*alpha*sample.x() / (1.f - sample.x()),
+          cos_theta   = dr::rsqrt(1.f + tan_theta_2),
+          sin_theta   = dr::safe_sqrt(1.f - cos_theta*cos_theta);
+    return { sin_theta*cos_phi, sin_theta*sin_phi, cos_theta};
+}
+
+/// Probability density of \ref square_to_ggx()
+template <typename Value>
+MI_INLINE Value square_to_ggx_pdf(const Vector<Value, 3> &m,
+                                  const Value &alpha) {
+    Value alpha_2 = alpha*alpha;
+    return dr::rcp(dr::Pi<Value> * alpha_2 * dr::sqr(dr::sqr(m.x()/alpha) + dr::sqr(m.y()/alpha) + dr::sqr(m.z()))) * m.z();
 }
 
 // =======================================================================

@@ -127,6 +127,14 @@ MI_PY_EXPORT(warp) {
           warp::square_to_beckmann_pdf<Float>,
           "v"_a, "alpha"_a, D(warp, square_to_beckmann_pdf));
 
+    m.def("square_to_ggx",
+          warp::square_to_ggx<Float>,
+          "sample"_a, "alpha"_a, D(warp, square_to_ggx));
+
+     m.def("square_to_ggx_pdf",
+          warp::square_to_ggx_pdf<Float>,
+          "v"_a, "alpha"_a, D(warp, square_to_ggx_pdf));
+
     m.def("square_to_von_mises_fisher",
           warp::square_to_von_mises_fisher<Float>,
           "sample"_a, "kappa"_a, D(warp, square_to_von_mises_fisher));

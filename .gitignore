@@ -28,3 +28,6 @@ __pycache__
 /docs/src/quickstart
 /docs/src/generated
 /docs/resources
+
+# Results
+results/.ipynb_checkpoints

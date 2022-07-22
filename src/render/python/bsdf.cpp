@@ -22,6 +22,8 @@ MI_PY_EXPORT(BSDFContext) {
         .def_value(BSDFFlags, NonSymmetric)
         .def_value(BSDFFlags, FrontSide)
         .def_value(BSDFFlags, BackSide)
+        .def_value(BSDFFlags, DifferentialSamplingNegative)
+        .def_value(BSDFFlags, DifferentialSamplingPositive)
         .def_value(BSDFFlags, Reflection)
         .def_value(BSDFFlags, Transmission)
         .def_value(BSDFFlags, Diffuse)

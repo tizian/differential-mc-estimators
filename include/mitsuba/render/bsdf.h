@@ -85,6 +85,12 @@ enum class BSDFFlags : uint32_t {
     /// Does the implementation require access to texture-space differentials
     NeedsDifferentials   = 0x20000,
 
+    /// Target the negative valued dBSDF with differential sampling?
+    DifferentialSamplingNegative = 0x40000,
+
+    /// Target the positive valued dBSDF with differential sampling?
+    DifferentialSamplingPositive = 0x80000,
+
     // =============================================================
     //!                 Compound lobe attributes
     // =============================================================
