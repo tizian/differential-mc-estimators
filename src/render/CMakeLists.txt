@@ -69,6 +69,7 @@ add_library(mitsuba-render OBJECT
   shapegroup.cpp   ${INC_DIR}/shapegroup.h
   volume.cpp       ${INC_DIR}/volume.h
   volumegrid.cpp   ${INC_DIR}/volumegrid.h
+                   ${INC_DIR}/diff_microfacet.h
   ${LIBRENDER_EXTRA_SRC}
 )
 

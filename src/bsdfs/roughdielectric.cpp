@@ -8,6 +8,7 @@
 #include <mitsuba/render/fresnel.h>
 #include <mitsuba/render/texture.h>
 #include <mitsuba/render/sampler.h>
+#include <mitsuba/render/diff_microfacet.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -153,6 +154,8 @@ to significantly slower convergence.
 
  */
 
+using namespace diff_microfacet;
+
 template <typename Float, typename Spectrum>
 class RoughDielectric final : public BSDF<Float, Spectrum> {
 public:
@@ -206,6 +209,9 @@ public:
             m_alpha_u = m_alpha_v = props.texture<Texture>("alpha", 0.1f);
         }
 
+        m_differential_sampling = props.get<bool>("differential_sampling", false);
+        m_principled_roughness_mapping = props.get<bool>("principled_roughness_mapping", false);
+
         BSDFFlags extra = (m_alpha_u != m_alpha_v) ? BSDFFlags::Anisotropic : BSDFFlags(0);
         m_components.push_back(BSDFFlags::GlossyReflection | BSDFFlags::FrontSide |
                                BSDFFlags::BackSide | extra);
@@ -255,95 +261,179 @@ public:
         // Ignore perfectly grazing configurations
         active &= dr::neq(cos_theta_i, 0.f);
 
-        /* Construct the microfacet distribution matching the roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
 
-        /* Trick by Walter et al.: slightly scale the roughness values to
-           reduce importance sampling weights. Not needed for the
-           Heitz and D'Eon sampling technique. */
-        MicrofacetDistribution sample_distr(distr);
-        if (unlikely(!m_sample_visible))
-            sample_distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(cos_theta_i)));
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
 
-        // Sample the microfacet normal
-        Normal3f m;
-        std::tie(m, bs.pdf) =
-            sample_distr.sample(dr::mulsign(si.wi, cos_theta_i), sample2);
-        active &= dr::neq(bs.pdf, 0.f);
+            /* Construct the microfacet distribution matching the roughness values at the current surface position. */
+            MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
 
-        auto [F, cos_theta_t, eta_it, eta_ti] =
-            fresnel(dr::dot(si.wi, m), m_eta);
+            /* Trick by Walter et al.: slightly scale the roughness values to
+               reduce importance sampling weights. Not needed for the
+               Heitz and D'Eon sampling technique. */
+            MicrofacetDistribution sample_distr(distr);
+            if (unlikely(!m_sample_visible))
+                sample_distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(cos_theta_i)));
 
-        // Select the lobe to be sampled
-        UnpolarizedSpectrum weight;
-        Mask selected_r, selected_t;
-        if (likely(has_reflection && has_transmission)) {
-            selected_r = sample1 <= F && active;
-            weight = 1.f;
-            bs.pdf *= dr::select(selected_r, F, 1.f - F);
-        } else {
-            if (has_reflection || has_transmission) {
-                selected_r = Mask(has_reflection) && active;
-                weight = has_reflection ? F : (1.f - F);
+            // Sample the microfacet normal
+            Normal3f m;
+            std::tie(m, bs.pdf) =
+                sample_distr.sample(dr::mulsign(si.wi, cos_theta_i), sample2);
+            active &= dr::neq(bs.pdf, 0.f);
+
+            auto [F, cos_theta_t, eta_it, eta_ti] =
+                fresnel(dr::dot(si.wi, m), m_eta);
+
+            // Select the lobe to be sampled
+            UnpolarizedSpectrum weight;
+            Mask selected_r, selected_t;
+            if (likely(has_reflection && has_transmission)) {
+                selected_r = sample1 <= F && active;
+                weight = 1.f;
+                bs.pdf *= dr::select(selected_r, F, 1.f - F);
             } else {
-                return { bs, 0.f };
+                if (has_reflection || has_transmission) {
+                    selected_r = Mask(has_reflection) && active;
+                    weight = has_reflection ? F : (1.f - F);
+                } else {
+                    return { bs, 0.f };
+                }
             }
+
+            selected_t = !selected_r && active;
+
+            bs.eta               = dr::select(selected_r, Float(1.f), eta_it);
+            bs.sampled_component = dr::select(selected_r, UInt32(0), UInt32(1));
+            bs.sampled_type      = dr::select(selected_r,
+                                          UInt32(+BSDFFlags::GlossyReflection),
+                                          UInt32(+BSDFFlags::GlossyTransmission));
+
+            Float dwh_dwo = 0.f;
+
+            // Reflection sampling
+            if (dr::any_or<true>(selected_r)) {
+                // Perfect specular reflection based on the microfacet normal
+                bs.wo[selected_r] = reflect(si.wi, m);
+
+                if (m_specular_reflectance)
+                    weight[selected_r] *= m_specular_reflectance->eval(si, selected_r);
+
+                // Jacobian of the half-direction mapping
+                dwh_dwo = dr::rcp(4.f * dr::dot(bs.wo, m));
+            }
+
+            // Transmission sampling
+            if (dr::any_or<true>(selected_t)) {
+                // Perfect specular transmission based on the microfacet normal
+                bs.wo[selected_t]  = refract(si.wi, m, cos_theta_t, eta_ti);
+
+                /* For transmission, radiance must be scaled to account for the solid
+                   angle compression that occurs when crossing the interface. */
+                UnpolarizedSpectrum factor = (ctx.mode == TransportMode::Radiance) ? dr::sqr(eta_ti) : Float(1.f);
+
+                if (m_specular_transmittance)
+                    factor *= m_specular_transmittance->eval(si, selected_t);
+
+                weight[selected_t] *= factor;
+
+                // Jacobian of the half-direction mapping
+                dr::masked(dwh_dwo, selected_t) =
+                    (dr::sqr(bs.eta) * dr::dot(bs.wo, m)) /
+                     dr::sqr(dr::dot(si.wi, m) + bs.eta * dr::dot(bs.wo, m));
+            }
+
+            if (likely(m_sample_visible))
+                weight *= distr.smith_g1(bs.wo, m);
+            else
+                weight *= distr.G(si.wi, bs.wo, m) * dr::dot(si.wi, m) /
+                          (cos_theta_i * Frame3f::cos_theta(m));
+
+            bs.pdf *= dr::abs(dwh_dwo);
+
+            return { bs, depolarizer<Spectrum>(weight) & active };
+
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Sample the microfacet normal.
+               To achieve stratification between the positive and negative
+               components of the dBSDF with antithetic sampling, we can request
+               to only sample specific parts. */
+            Normal3f m(0.f);
+            if (ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive) &&
+                ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs(sample2, alpha)
+                                                         : square_to_d_ggx_abs(sample2, alpha);
+            } else if (ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_pos(sample2, alpha)
+                                                         : square_to_d_ggx_pos(sample2, alpha);
+            } else if (ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_neg(sample2, alpha)
+                                                         : square_to_d_ggx_neg(sample2, alpha);
+            }
+
+            auto [F, cos_theta_t, eta_it, eta_ti] = fresnel(dr::dot(si.wi, m), Float(m_eta));
+
+            // Select the lobe to be sampled
+            Mask selected_r, selected_t;
+            if (likely(has_reflection && has_transmission)) {
+                selected_r = sample1 <= dr::detach(F) && active;
+            } else {
+                if (has_reflection || has_transmission) {
+                    selected_r = Mask(has_reflection) && active;
+                } else {
+                    return { bs, 0.f };
+                }
+            }
+
+            selected_t = !selected_r && active;
+
+            bs.eta               = dr::select(selected_r, Float(1.f), eta_it);
+            bs.sampled_component = dr::select(selected_r, UInt32(0), UInt32(1));
+            bs.sampled_type      = dr::select(selected_r, UInt32(+BSDFFlags::GlossyReflection),
+                                                          UInt32(+BSDFFlags::GlossyTransmission));
+
+            Float dwh_dwo = 0.f;
+
+            // Reflection sampling
+            if (dr::any_or<true>(selected_r)) {
+                // Perfect specular reflection based on the microfacet normal
+                bs.wo[selected_r] = reflect(si.wi, m);
+
+                // Jacobian of the half-direction mapping
+                dwh_dwo = dr::rcp(4.f * dr::dot(bs.wo, m));
+            }
+
+            // Transmission sampling
+            if (dr::any_or<true>(selected_t)) {
+                // Perfect specular transmission based on the microfacet normal
+                bs.wo[selected_t]  = refract(si.wi, m, cos_theta_t, eta_ti);
+
+                // Jacobian of the half-direction mapping
+                dr::masked(dwh_dwo, selected_t) =
+                    (dr::sqr(bs.eta) * dr::dot(bs.wo, m)) /
+                     dr::sqr(dr::dot(si.wi, m) + bs.eta * dr::dot(bs.wo, m));
+            }
+
+            // Evaluate pdf
+            bs.pdf = pdf(ctx, si, bs.wo, active);
+
+            Spectrum weight = dr::select(bs.pdf > 0.f, eval(ctx, si, bs.wo, active) / bs.pdf, 0.f);
+
+            return { bs, depolarizer<Spectrum>(weight) & active };
         }
-
-        selected_t = !selected_r && active;
-
-        bs.eta               = dr::select(selected_r, Float(1.f), eta_it);
-        bs.sampled_component = dr::select(selected_r, UInt32(0), UInt32(1));
-        bs.sampled_type      = dr::select(selected_r,
-                                      UInt32(+BSDFFlags::GlossyReflection),
-                                      UInt32(+BSDFFlags::GlossyTransmission));
-
-        Float dwh_dwo = 0.f;
-
-        // Reflection sampling
-        if (dr::any_or<true>(selected_r)) {
-            // Perfect specular reflection based on the microfacet normal
-            bs.wo[selected_r] = reflect(si.wi, m);
-
-            if (m_specular_reflectance)
-                weight[selected_r] *= m_specular_reflectance->eval(si, selected_r);
-
-            // Jacobian of the half-direction mapping
-            dwh_dwo = dr::rcp(4.f * dr::dot(bs.wo, m));
-        }
-
-        // Transmission sampling
-        if (dr::any_or<true>(selected_t)) {
-            // Perfect specular transmission based on the microfacet normal
-            bs.wo[selected_t]  = refract(si.wi, m, cos_theta_t, eta_ti);
-
-            /* For transmission, radiance must be scaled to account for the solid
-               angle compression that occurs when crossing the interface. */
-            UnpolarizedSpectrum factor = (ctx.mode == TransportMode::Radiance) ? dr::sqr(eta_ti) : Float(1.f);
-
-            if (m_specular_transmittance)
-                factor *= m_specular_transmittance->eval(si, selected_t);
-
-            weight[selected_t] *= factor;
-
-            // Jacobian of the half-direction mapping
-            dr::masked(dwh_dwo, selected_t) =
-                (dr::sqr(bs.eta) * dr::dot(bs.wo, m)) /
-                 dr::sqr(dr::dot(si.wi, m) + bs.eta * dr::dot(bs.wo, m));
-        }
-
-        if (likely(m_sample_visible))
-            weight *= distr.smith_g1(bs.wo, m);
-        else
-            weight *= distr.G(si.wi, bs.wo, m) * dr::dot(si.wi, m) /
-                      (cos_theta_i * Frame3f::cos_theta(m));
-
-        bs.pdf *= dr::abs(dwh_dwo);
-
-        return { bs, depolarizer<Spectrum>(weight) & active };
     }
 
     Spectrum eval(const BSDFContext &ctx, const SurfaceInteraction3f &si,
@@ -374,10 +464,13 @@ public:
 
         /* Construct the microfacet distribution matching the
            roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
+        MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
 
         // Evaluate the microfacet normal distribution
         Float D = distr.eval(m);
@@ -461,30 +554,51 @@ public:
                                (eta * eta * dr::dot(wo, m)) /
                                    dr::sqr(dr::dot(si.wi, m) + eta * dr::dot(wo, m)));
 
-        /* Construct the microfacet distribution matching the
-           roughness values at the current surface position. */
-        MicrofacetDistribution sample_distr(
-            m_type,
-            m_alpha_u->eval_1(si, active),
-            m_alpha_v->eval_1(si, active),
-            m_sample_visible
-        );
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
 
-        /* Trick by Walter et al.: slightly scale the roughness values to
-           reduce importance sampling weights. Not needed for the
-           Heitz and D'Eon sampling technique. */
-        if (unlikely(!m_sample_visible))
-            sample_distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(Frame3f::cos_theta(si.wi))));
+        Float pdf = 0.f;
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
 
-        // Evaluate the microfacet model sampling density function
-        Float prob = sample_distr.pdf(dr::mulsign(si.wi, Frame3f::cos_theta(si.wi)), m);
+            /* Construct the microfacet distribution matching the
+               roughness values at the current surface position. */
+            MicrofacetDistribution sample_distr(m_type, alpha_u, alpha_v, m_sample_visible);
+
+            /* Trick by Walter et al.: slightly scale the roughness values to
+               reduce importance sampling weights. Not needed for the
+               Heitz and D'Eon sampling technique. */
+            if (unlikely(!m_sample_visible))
+                sample_distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(Frame3f::cos_theta(si.wi))));
+
+            // Evaluate the microfacet model sampling density function
+            pdf = sample_distr.pdf(dr::mulsign(si.wi, Frame3f::cos_theta(si.wi)), m);
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Evaluate the underlying dMicrofacet distribution.
+               No matter which component (positive, negative, combined) we sampled,
+               we always return the combined / absolute valued density here.  */
+            pdf = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs_pdf(m, alpha)
+                                                       : square_to_d_ggx_abs_pdf(m, alpha);
+        }
 
         if (likely(has_transmission && has_reflection)) {
             Float F = std::get<0>(fresnel(dr::dot(si.wi, m), m_eta));
-            prob *= dr::select(reflect, F, 1.f - F);
+            pdf *= dr::select(reflect, F, 1.f - F);
         }
 
-        return dr::select(active, prob * dr::abs(dwh_dwo), 0.f);
+        return dr::select(active, pdf * dr::abs(dwh_dwo), 0.f);
     }
 
     std::pair<Spectrum, Float> eval_pdf(const BSDFContext &ctx,
@@ -530,10 +644,13 @@ public:
 
         /* Construct the microfacet distribution matching the
            roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
+        MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
 
         // Evaluate the microfacet normal distribution
         Float D = distr.eval(m);
@@ -575,14 +692,33 @@ public:
             result[eval_t] = value;
         }
 
-        /* Trick by Walter et al.: slightly scale the roughness values to
-           reduce importance sampling weights. Not needed for the
-           Heitz and D'Eon sampling technique. */
-        if (unlikely(!m_sample_visible))
-            distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(cos_theta_i)));
+        Float pdf = 0.f;
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
 
-        // Evaluate the microfacet model sampling density function
-        Float pdf = distr.pdf(dr::mulsign(si.wi, cos_theta_i), m);
+            /* Trick by Walter et al.: slightly scale the roughness values to
+               reduce importance sampling weights. Not needed for the
+               Heitz and D'Eon sampling technique. */
+            if (unlikely(!m_sample_visible))
+                distr.scale_alpha(1.2f - .2f * dr::sqrt(dr::abs(cos_theta_i)));
+
+            // Evaluate the microfacet model sampling density function
+            pdf = distr.pdf(dr::mulsign(si.wi, cos_theta_i), m);
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Evaluate the underlying dMicrofacet distribution.
+               No matter which component (positive, negative, combined) we sampled,
+               we always return the combined / absolute valued density here.  */
+            pdf = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs_pdf(m, alpha)
+                                                       : square_to_d_ggx_abs_pdf(m, alpha);
+        }
 
         if (likely(has_transmission && has_reflection))
             pdf *= dr::select(reflect, F, 1.f - F);
@@ -628,6 +764,8 @@ private:
     ref<Texture> m_alpha_u, m_alpha_v;
     Float m_eta, m_inv_eta;
     bool m_sample_visible;
+    bool m_differential_sampling;
+    bool m_principled_roughness_mapping;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(RoughDielectric, BSDF)

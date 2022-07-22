@@ -109,6 +109,7 @@ MI_PY_DECLARE(srgb);
 MI_PY_DECLARE(Texture);
 MI_PY_DECLARE(Volume);
 MI_PY_DECLARE(VolumeGrid);
+MI_PY_DECLARE(diff_microfacet);
 
 #define MODULE_NAME MI_MODULE_NAME(mitsuba, MI_VARIANT_NAME)
 
@@ -122,18 +123,20 @@ PYBIND11_MODULE(MODULE_NAME, m) {
     MI_PY_IMPORT_TYPES()
 
     // Create sub-modules
-    py::module math    = create_submodule(m, "math"),
-               spline  = create_submodule(m, "spline"),
-               warp    = create_submodule(m, "warp"),
-               quad    = create_submodule(m, "quad"),
-               mueller = create_submodule(m, "mueller");
+    py::module math            = create_submodule(m, "math"),
+               spline          = create_submodule(m, "spline"),
+               warp            = create_submodule(m, "warp"),
+               quad            = create_submodule(m, "quad"),
+               mueller         = create_submodule(m, "mueller"),
+               diff_microfacet = create_submodule(m, "diff_microfacet");
 
-    math.doc()    = "Mathematical routines, special functions, etc.";
-    spline.doc()  = "Functions for evaluating and sampling Catmull-Rom splines";
-    warp.doc()    = "Common warping techniques that map from the unit square to other "
-                    "domains, such as spheres, hemispheres, etc.";
-    quad.doc()    = "Functions for numerical quadrature";
-    mueller.doc() = "Routines to manipulate Mueller matrices for polarized rendering.";
+    math.doc()            = "Mathematical routines, special functions, etc.";
+    spline.doc()          = "Functions for evaluating and sampling Catmull-Rom splines";
+    warp.doc()            = "Common warping techniques that map from the unit square to other "
+                            "domains, such as spheres, hemispheres, etc.";
+    quad.doc()            = "Functions for numerical quadrature";
+    mueller.doc()         = "Routines to manipulate Mueller matrices for polarized rendering.";
+    diff_microfacet.doc() = "Routines for differentiable Microfacet sampling.";
 
     MI_PY_IMPORT(DrJit);
 
@@ -199,6 +202,7 @@ PYBIND11_MODULE(MODULE_NAME, m) {
     MI_PY_IMPORT(Texture);
     MI_PY_IMPORT(Volume);
     MI_PY_IMPORT(VolumeGrid);
+    MI_PY_IMPORT_SUBMODULE(diff_microfacet);
 
     py::object mitsuba_ext = py::module::import("mitsuba.mitsuba_ext");
     cast_object = (Caster) (void *)((py::capsule) mitsuba_ext.attr("cast_object"));

@@ -5,6 +5,7 @@
 #include <mitsuba/render/ior.h>
 #include <mitsuba/render/microfacet.h>
 #include <mitsuba/render/texture.h>
+#include <mitsuba/render/diff_microfacet.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -154,6 +155,8 @@ implementation of the underlying Fresnel equations.
 
  */
 
+using namespace diff_microfacet;
+
 template <typename Float, typename Spectrum>
 class RoughConductor final : public BSDF<Float, Spectrum> {
 public:
@@ -201,6 +204,9 @@ public:
         if (props.has_property("specular_reflectance"))
             m_specular_reflectance = props.texture<Texture>("specular_reflectance", 1.f);
 
+        m_differential_sampling = props.get<bool>("differential_sampling", false);
+        m_principled_roughness_mapping = props.get<bool>("principled_roughness_mapping", false);
+
         m_flags = BSDFFlags::GlossyReflection | BSDFFlags::FrontSide;
         if (m_alpha_u != m_alpha_v)
             m_flags = m_flags | BSDFFlags::Anisotropic;
@@ -237,71 +243,123 @@ public:
         if (unlikely(!ctx.is_enabled(BSDFFlags::GlossyReflection) || dr::none_or<false>(active)))
             return { bs, 0.f };
 
-        /* Construct a microfacet distribution matching the
-           roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
-
-        // Sample M, the microfacet normal
-        Normal3f m;
-        std::tie(m, bs.pdf) = distr.sample(si.wi, sample2);
-
-        // Perfect specular reflection based on the microfacet normal
-        bs.wo = reflect(si.wi, m);
-        bs.eta = 1.f;
-        bs.sampled_component = 0;
-        bs.sampled_type = +BSDFFlags::GlossyReflection;
-
-        // Ensure that this is a valid sample
-        active &= dr::neq(bs.pdf, 0.f) && Frame3f::cos_theta(bs.wo) > 0.f;
-
-        UnpolarizedSpectrum weight;
-        if (likely(m_sample_visible))
-            weight = distr.smith_g1(bs.wo, m);
-        else
-            weight = distr.G(si.wi, bs.wo, m) * dr::dot(si.wi, m) /
-                     (cos_theta_i * Frame3f::cos_theta(m));
-
-        // Jacobian of the half-direction mapping
-        bs.pdf /= 4.f * dr::dot(bs.wo, m);
-
-        // Evaluate the Fresnel factor
-        dr::Complex<UnpolarizedSpectrum> eta_c(m_eta->eval(si, active),
-                                           m_k->eval(si, active));
-
-        Spectrum F;
-        if constexpr (is_polarized_v<Spectrum>) {
-            /* Due to the coordinate system rotations for polarization-aware
-               pBSDFs below we need to know the propagation direction of light.
-               In the following, light arrives along `-wo_hat` and leaves along
-               `+wi_hat`. */
-            Vector3f wo_hat = ctx.mode == TransportMode::Radiance ? bs.wo : si.wi,
-                     wi_hat = ctx.mode == TransportMode::Radiance ? si.wi : bs.wo;
-
-            // Mueller matrix for specular reflection.
-            F = mueller::specular_reflection(UnpolarizedSpectrum(dot(wo_hat, m)), eta_c);
-
-            /* The Stokes reference frame vector of this matrix lies perpendicular
-               to the plane of reflection. */
-            Vector3f s_axis_in  = dr::normalize(dr::cross(m, -wo_hat)),
-                     s_axis_out = dr::normalize(dr::cross(m, wi_hat));
-
-            /* Rotate in/out reference vector of F s.t. it aligns with the implicit
-               Stokes bases of -wo_hat & wi_hat. */
-            F = mueller::rotate_mueller_basis(F,
-                                              -wo_hat, s_axis_in, mueller::stokes_basis(-wo_hat),
-                                               wi_hat, s_axis_out, mueller::stokes_basis(wi_hat));
-        } else {
-            F = fresnel_conductor(UnpolarizedSpectrum(dr::dot(si.wi, m)), eta_c);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
         }
 
-        /* If requested, include the specular reflectance component */
-        if (m_specular_reflectance)
-            weight *= m_specular_reflectance->eval(si, active);
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
 
-        return { bs, (F * weight) & active };
+            /* Construct a microfacet distribution matching the
+               roughness values at the current surface position. */
+            MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
+
+            // Sample M, the microfacet normal
+            Normal3f m;
+            std::tie(m, bs.pdf) = distr.sample(si.wi, sample2);
+
+            // Perfect specular reflection based on the microfacet normal
+            bs.wo = reflect(si.wi, m);
+            bs.eta = 1.f;
+            bs.sampled_component = 0;
+            bs.sampled_type = +BSDFFlags::GlossyReflection;
+
+            // Ensure that this is a valid sample
+            active &= dr::neq(bs.pdf, 0.f) && Frame3f::cos_theta(bs.wo) > 0.f;
+
+            // Jacobian of the half-direction mapping
+            bs.pdf /= 4.f * dr::dot(bs.wo, m);
+
+            // Compute the final sample weight
+            UnpolarizedSpectrum weight;
+            if (likely(m_sample_visible))
+                weight = distr.smith_g1(bs.wo, m);
+            else
+                weight = distr.G(si.wi, bs.wo, m) * dr::dot(si.wi, m) /
+                         (cos_theta_i * Frame3f::cos_theta(m));
+
+            // Evaluate the Fresnel factor
+            dr::Complex<UnpolarizedSpectrum> eta_c(m_eta->eval(si, active),
+                                                   m_k->eval(si, active));
+
+            Spectrum F;
+            if constexpr (is_polarized_v<Spectrum>) {
+                /* Due to the coordinate system rotations for polarization-aware
+                   pBSDFs below we need to know the propagation direction of light.
+                   In the following, light arrives along `-wo_hat` and leaves along
+                   `+wi_hat`. */
+                Vector3f wo_hat = ctx.mode == TransportMode::Radiance ? bs.wo : si.wi,
+                         wi_hat = ctx.mode == TransportMode::Radiance ? si.wi : bs.wo;
+
+                // Mueller matrix for specular reflection.
+                F = mueller::specular_reflection(UnpolarizedSpectrum(dot(wo_hat, m)), eta_c);
+
+                /* The Stokes reference frame vector of this matrix lies perpendicular
+                   to the plane of reflection. */
+                Vector3f s_axis_in  = dr::normalize(dr::cross(m, -wo_hat)),
+                         s_axis_out = dr::normalize(dr::cross(m, wi_hat));
+
+                /* Rotate in/out reference vector of F s.t. it aligns with the implicit
+                   Stokes bases of -wo_hat & wi_hat. */
+                F = mueller::rotate_mueller_basis(F,
+                                                  -wo_hat, s_axis_in, mueller::stokes_basis(-wo_hat),
+                                                   wi_hat, s_axis_out, mueller::stokes_basis(wi_hat));
+            } else {
+                F = fresnel_conductor(UnpolarizedSpectrum(dr::dot(si.wi, m)), eta_c);
+            }
+
+            /* If requested, include the specular reflectance component */
+            if (m_specular_reflectance)
+                weight *= m_specular_reflectance->eval(si, active);
+
+            return { bs, (F * weight) & active };
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Sample the microfacet normal.
+               To achieve stratification between the positive and negative
+               components of the dBSDF with antithetic sampling, we can request
+               to only sample specific parts. */
+            Normal3f m(0.f);
+            if (ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive) &&
+                ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs(sample2, alpha)
+                                                         : square_to_d_ggx_abs(sample2, alpha);
+            } else if (ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_pos(sample2, alpha)
+                                                         : square_to_d_ggx_pos(sample2, alpha);
+            } else if (ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative)) {
+                m = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_neg(sample2, alpha)
+                                                         : square_to_d_ggx_neg(sample2, alpha);
+            }
+
+            // Perfect specular reflection based on the microfacet normal
+            bs.wo = reflect(si.wi, m);
+            bs.eta = 1.f;
+            bs.sampled_component = 0;
+            bs.sampled_type = +BSDFFlags::GlossyReflection;
+
+            // Evaluate pdf
+            bs.pdf = pdf(ctx, si, bs.wo, active);
+
+            // Ensure that this is a valid sample
+            active &= dr::neq(bs.pdf, 0.f) && Frame3f::cos_theta(bs.wo) > 0.f;
+
+            /* Evaluate the sampling weight, i.e. evaluate the BRDF in
+               differential way and divide by the sampling density. */
+            Spectrum weight = dr::select(bs.pdf > 0.f, eval(ctx, si, bs.wo, active) / bs.pdf, 0.f);
+
+            return { bs, weight & active };
+        }
     }
 
     Spectrum eval(const BSDFContext &ctx, const SurfaceInteraction3f &si,
@@ -321,10 +379,13 @@ public:
 
         /* Construct a microfacet distribution matching the
            roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
+        MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
 
         // Evaluate the microfacet normal distribution
         Float D = distr.eval(H);
@@ -394,19 +455,42 @@ public:
         if (unlikely(!ctx.is_enabled(BSDFFlags::GlossyReflection) || dr::none_or<false>(active)))
             return 0.f;
 
-        /* Construct a microfacet distribution matching the
-           roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
 
-        Float result;
-        if (likely(m_sample_visible))
-            result = distr.eval(m) * distr.smith_g1(si.wi, m) /
-                     (4.f * cos_theta_i);
-        else
-            result = distr.pdf(si.wi, m) / (4.f * dr::dot(wo, m));
+        Float result = 0.f;
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
+
+            /* Construct a microfacet distribution matching the
+               roughness values at the current surface position. */
+            MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
+
+            if (likely(m_sample_visible))
+                result = distr.eval(m) * distr.smith_g1(si.wi, m) /
+                         (4.f * cos_theta_i);
+            else
+                result = distr.pdf(si.wi, m) / (4.f * dr::dot(wo, m));
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Evaluate the underlying dMicrofacet distribution.
+               No matter which component (positive, negative, combined) we sampled,
+               we always return the combined / absolute valued density here.  */
+            result = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs_pdf(m, alpha)
+                                                          : square_to_d_ggx_abs_pdf(m, alpha);
+            result /= (4.f * dr::dot(wo, m));
+        }
 
         return dr::select(active, result, 0.f);
     }
@@ -435,10 +519,13 @@ public:
 
         /* Construct a microfacet distribution matching the
            roughness values at the current surface position. */
-        MicrofacetDistribution distr(m_type,
-                                     m_alpha_u->eval_1(si, active),
-                                     m_alpha_v->eval_1(si, active),
-                                     m_sample_visible);
+        Float alpha_u = m_alpha_u->eval_1(si, active),
+              alpha_v = m_alpha_v->eval_1(si, active);
+        if (m_principled_roughness_mapping) {
+            alpha_u = alpha_u*alpha_u;
+            alpha_v = alpha_v*alpha_v;
+        }
+        MicrofacetDistribution distr(m_type, alpha_u, alpha_v, m_sample_visible);
 
         // Evaluate the microfacet normal distribution
         Float D = distr.eval(H);
@@ -486,11 +573,30 @@ public:
         if (m_specular_reflectance)
             value *= m_specular_reflectance->eval(si, active);
 
-        Float pdf;
-        if (likely(m_sample_visible))
-            pdf = D * smith_g1_wi / (4.f * cos_theta_i);
-        else
-            pdf = distr.pdf(si.wi, H) / (4.f * dr::dot(wo, H));
+        Float pdf = 0.f;
+        if (!(ctx.is_enabled(BSDFFlags::DifferentialSamplingNegative) ||
+              ctx.is_enabled(BSDFFlags::DifferentialSamplingPositive)) ||
+            !m_differential_sampling) {
+            // Use the standard / primal sampling strategy.
+
+            if (likely(m_sample_visible))
+                pdf = D * smith_g1_wi / (4.f * cos_theta_i);
+            else
+                pdf = distr.pdf(si.wi, H) / (4.f * dr::dot(wo, H));
+        } else {
+            // Differential sampling strategy based on the diff. NDF
+
+            /* Only isotropic sampling is supported, so be conservative in the
+               anisotropic case. */
+            Float alpha = dr::maximum(alpha_u, alpha_v);
+
+            /* Evaluate the underlying dMicrofacet distribution.
+               No matter which component (positive, negative, combined) we sampled,
+               we always return the combined / absolute valued density here. */
+            pdf = (m_type == MicrofacetType::Beckmann) ? square_to_d_beckmann_abs_pdf(H, alpha)
+                                                       : square_to_d_ggx_abs_pdf(H, alpha);
+            pdf /= (4.f * dr::dot(wo, H));
+        }
 
         return { F * value & active, dr::select(active, pdf, 0.f) };
     }
@@ -524,6 +630,10 @@ private:
     ref<Texture> m_k;
     /// Specular reflectance component
     ref<Texture> m_specular_reflectance;
+    /// Use differential sampling for the microfacet distribution
+    bool m_differential_sampling;
+    /// Use squared roughness mapping based on the principled Disney BRDF
+    bool m_principled_roughness_mapping;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(RoughConductor, BSDF)
