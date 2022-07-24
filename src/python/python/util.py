@@ -346,13 +346,14 @@ class _RenderOp(dr.CustomOp):
     rendering operation is encountered by an AD graph traversal).
     """
 
-    def eval(self, scene, sensor, params, integrator, seed, spp):
+    def eval(self, scene, sensor, params, integrator, seed, spp, antithetic_pass):
         self.scene = scene
         self.sensor = sensor
         self.params = params
         self.integrator = integrator
         self.seed = seed
         self.spp = spp
+        self.antithetic_pass = antithetic_pass
 
         with dr.suspend_grad():
             return self.integrator.render(
@@ -372,11 +373,13 @@ class _RenderOp(dr.CustomOp):
                             'desired!')
         self.set_grad_out(
             self.integrator.render_forward(self.scene, self.params, self.sensor,
-                                           self.seed[1], self.spp[1]))
+                                           self.seed[1], self.spp[1],
+                                           self.antithetic_pass))
 
     def backward(self):
         self.integrator.render_backward(self.scene, self.params, self.grad_out(),
-                                        self.sensor, self.seed[1], self.spp[1])
+                                        self.sensor, self.seed[1], self.spp[1],
+                                        self.antithetic_pass)
 
     def name(self):
         return "RenderOp"
@@ -388,7 +391,8 @@ def render(scene: mi.Scene,
            seed: int = 0,
            seed_grad: int = 0,
            spp: int = 0,
-           spp_grad: int = 0) -> mi.TensorXf:
+           spp_grad: int = 0,
+           antithetic_pass: bool = False) -> mi.TensorXf:
     """
     This function provides a convenient high-level interface to differentiable
     rendering algorithms in Mi. The function returns a rendered image that can
@@ -460,6 +464,15 @@ def render(scene: mi.Scene,
         This parameter is analogous to the ``seed`` parameter but targets the
         differential simulation phase. If not specified, the implementation will
         copy the value from ``spp``.
+
+    Parameter ``antithetic_pass`` (``bool``):
+        **Added in this fork of the codebase**.
+        Our implementation of antithetic sampling calls the underlying
+        integrator twice (where the second pass uses `antithetic_pass=True`).
+        The key here is that both passes must share the same random number
+        state. In the end, the returned gradient contribution from both passes
+        are averaged.
+
     """
 
     if params is not None and not isinstance(params, mi.SceneParameters):
@@ -494,7 +507,7 @@ def render(scene: mi.Scene,
                         'to ensure unbiased gradient computation!')
 
     return dr.custom(_RenderOp, scene, sensor, params, integrator,
-                     (seed, seed_grad), (spp, spp_grad))
+                     (seed, seed_grad), (spp, spp_grad), antithetic_pass)
 
 # ------------------------------------------------------------------------------
 

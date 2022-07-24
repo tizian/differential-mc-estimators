@@ -54,6 +54,7 @@ class ADIntegrator(mi.CppADIntegrator):
                sensor: Union[int, mi.Sensor] = 0,
                seed: int = 0,
                spp: int = 0,
+               antithetic_pass: bool = False,
                develop: bool = True,
                evaluate: bool = True) -> mi.TensorXf:
 
@@ -87,6 +88,7 @@ class ADIntegrator(mi.CppADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
 
@@ -121,7 +123,8 @@ class ADIntegrator(mi.CppADIntegrator):
                        params: Any,
                        sensor: Union[int, mi.Sensor] = 0,
                        seed: int = 0,
-                       spp: int = 0) -> mi.TensorXf:
+                       spp: int = 0,
+                       antithetic_pass: bool = False) -> mi.TensorXf:
 
         if isinstance(sensor, int):
             sensor = scene.sensors()[sensor]
@@ -160,6 +163,7 @@ class ADIntegrator(mi.CppADIntegrator):
                     sampler=sampler,
                     ray=ray,
                     reparam=reparam,
+                    antithetic_pass=antithetic_pass,
                     active=mi.Bool(True)
                 )
 
@@ -202,7 +206,8 @@ class ADIntegrator(mi.CppADIntegrator):
                         grad_in: mi.TensorXf,
                         sensor: Union[int, mi.Sensor] = 0,
                         seed: int = 0,
-                        spp: int = 0) -> None:
+                        spp: int = 0,
+                        antithetic_pass: bool = False) -> None:
 
         if isinstance(sensor, int):
             sensor = scene.sensors()[sensor]
@@ -241,6 +246,7 @@ class ADIntegrator(mi.CppADIntegrator):
                     sampler=sampler,
                     ray=ray,
                     reparam=reparam,
+                    antithetic_pass=antithetic_pass,
                     active=mi.Bool(True)
                 )
 
@@ -576,7 +582,8 @@ class RBIntegrator(ADIntegrator):
                        params: Any,
                        sensor: Union[int, mi.Sensor] = 0,
                        seed: int = 0,
-                       spp: int = 0) -> mi.TensorXf:
+                       spp: int = 0,
+                       antithetic_pass: bool = False) -> mi.TensorXf:
         """
         Evaluates the forward-mode derivative of the rendering step.
 
@@ -631,6 +638,14 @@ class RBIntegrator(ADIntegrator):
             Optional parameter to override the number of samples per pixel for the
             differential rendering step. The value provided within the original
             scene specification takes precedence if ``spp=0``.
+
+        Parameter ``antithetic_pass`` (``bool``):
+            **Added in this fork of the codebase**.
+            Our implementation of antithetic sampling calls the underlying
+            integrator twice (where the second pass uses `antithetic_pass=True`).
+            The key here is that both passes must share the same random number
+            state. In the end, the returned gradient contribution from both passes
+            are averaged.
         """
 
         if isinstance(sensor, int):
@@ -673,6 +688,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
 
@@ -745,6 +761,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=state_out,
                 reparam=reparam,
+                antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
 
@@ -797,7 +814,8 @@ class RBIntegrator(ADIntegrator):
                         grad_in: mi.TensorXf,
                         sensor: Union[int, mi.Sensor] = 0,
                         seed: int = 0,
-                        spp: int = 0) -> None:
+                        spp: int = 0,
+                        antithetic_pass: bool = False) -> None:
         """
         Evaluates the reverse-mode derivative of the rendering step.
 
@@ -846,6 +864,14 @@ class RBIntegrator(ADIntegrator):
             Optional parameter to override the number of samples per pixel for the
             differential rendering step. The value provided within the original
             scene specification takes precedence if ``spp=0``.
+
+        Parameter ``antithetic_pass`` (``bool``):
+            **Added in this fork of the codebase**.
+            Our implementation of antithetic sampling calls the underlying
+            integrator twice (where the second pass uses `antithetic_pass=True`).
+            The key here is that both passes must share the same random number
+            state. In the end, the returned gradient contribution from both passes
+            are averaged.
         """
 
         if isinstance(sensor, int):
@@ -888,6 +914,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
 
@@ -950,6 +977,7 @@ class RBIntegrator(ADIntegrator):
                 δL=δL,
                 state_in=state_out,
                 reparam=reparam,
+                antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
 
@@ -971,7 +999,8 @@ def render_forward(self: mi.Integrator,
                    params: Any,
                    sensor: Union[int, mi.Sensor] = 0,
                    seed: int = 0,
-                   spp: int = 0) -> mi.TensorXf:
+                   spp: int = 0,
+                   antithetic_pass: bool = False) -> mi.TensorXf:
     """
     Evaluates the forward-mode derivative of the rendering step.
 
@@ -1035,6 +1064,14 @@ def render_forward(self: mi.Integrator,
         Optional parameter to override the number of samples per pixel for the
         differential rendering step. The value provided within the original
         scene specification takes precedence if ``spp=0``.
+
+    Parameter ``antithetic_pass`` (``bool``):
+        **Added in this fork of the codebase**.
+        Our implementation of antithetic sampling calls the underlying
+        integrator twice (where the second pass uses `antithetic_pass=True`).
+        The key here is that both passes must share the same random number
+        state. In the end, the returned gradient contribution from both passes
+        are averaged.
     """
 
     # Recorded loops cannot be differentiated, so let's disable them
@@ -1060,7 +1097,8 @@ def render_backward(self: mi.Integrator,
                     grad_in: mi.TensorXf,
                     sensor: Union[int, mi.Sensor] = 0,
                     seed: int = 0,
-                    spp: int = 0) -> None:
+                    spp: int = 0,
+                    antithetic_pass: bool = False) -> None:
     """
     Evaluates the reverse-mode derivative of the rendering step.
 
@@ -1119,6 +1157,14 @@ def render_backward(self: mi.Integrator,
         Optional parameter to override the number of samples per pixel for the
         differential rendering step. The value provided within the original
         scene specification takes precedence if ``spp=0``.
+
+    Parameter ``antithetic_pass`` (``bool``):
+        **Added in this fork of the codebase**.
+        Our implementation of antithetic sampling calls the underlying
+        integrator twice (where the second pass uses `antithetic_pass=True`).
+        The key here is that both passes must share the same random number
+        state. In the end, the returned gradient contribution from both passes
+        are averaged.
     """
 
     # Recorded loops cannot be differentiated, so let's disable them
