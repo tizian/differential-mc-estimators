@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+
+<scene version="2.2.1">
+    <integrator type="path">
+        <integer name="max_depth" value="2"/>
+    </integrator>
+
+    <shape type="obj">
+        <string name="filename" value="meshes/veach_floor.obj" />
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0.4 0.5 0.4" />
+        </bsdf>
+        <boolean name="face_normals" value="true"/>
+    </shape>
+
+
+    <shape type="obj" id="plates_top">
+        <string name="filename" value="meshes/veach_plates_top.obj" />
+
+        <boolean name="face_normals" value="true"/>
+
+        <bsdf type="roughconductor" id="microfacet_bsdf">
+            <rgb name="specular_reflectance" value="0.6, 0.8, 1.0"/>
+
+            <texture name="alpha" type="bitmap">
+                <string name="filename" value="textures/veach_roughness.png"/>
+                <boolean name="raw" value="true"/>
+            </texture>
+
+            <boolean name="differential_sampling" value="true"/>
+            <boolean name="sample_visible" value="true"/>
+        </bsdf>
+    </shape>
+
+    <shape type="obj">
+        <string name="filename" value="meshes/veach_plates_bottom.obj" />
+        <boolean name="face_normals" value="true"/>
+
+        <bsdf type="roughplastic">
+            <rgb name="diffuse_reflectance" value="0.14 0.18 0.4" />
+            <spectrum name="specular_reflectance" value="1" />
+            <float name="alpha" value="0.04" />
+        </bsdf>
+    </shape>
+
+    <shape type="sphere">
+        <point name="center" x="3.25" y="0" z="0" />
+        <float name="radius" value=".9" />
+
+        <emitter type="area">
+            <rgb name="radiance" value="2" />
+        </emitter>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0,0,0" />
+        </bsdf>
+    </shape>
+    <shape type="sphere">
+        <point name="center" x="1.083" y="0" z="0" />
+        <float name="radius" value=".5" />
+
+        <emitter type="area">
+            <rgb name="radiance" value="5" />
+        </emitter>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0,0,0" />
+        </bsdf>
+    </shape>
+    <shape type="sphere">
+        <point name="center" x="-1.083" y="0" z="0" />
+        <float name="radius" value=".2" />
+
+        <emitter type="area">
+            <rgb name="radiance" value="10" />
+        </emitter>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0,0,0" />
+        </bsdf>
+    </shape>
+    <shape type="sphere">
+        <point name="center" x="-3.25" y="0" z="0" />
+        <float name="radius" value=".03333" />
+
+        <emitter type="area">
+            <rgb name="radiance" value="160" />
+        </emitter>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0,0,0" />
+        </bsdf>
+    </shape>
+
+    <sensor type="perspective">
+        <string name="fov_axis" value="smaller" />
+        <transform name="to_world">
+            <scale x="-1" />
+            <scale x="-1" />
+            <lookat origin="0, 2, 15" target="0, -2, 2.5" up="0, 1, 0" />
+        </transform>
+        <float name="fov" value="28" />
+        <sampler type="independent">
+            <integer name="sample_count" value="32" />
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="512" />
+            <integer name="height" value="512" />
+            <boolean name="banner" value="true" />
+            <rfilter type="box" />
+        </film>
+    </sensor>
+</scene>
