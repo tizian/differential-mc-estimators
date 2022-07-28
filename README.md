@@ -1,7 +1,72 @@
+<img src="https://github.com/tizian/differential-mc-estimators/raw/master/docs/images/teaser.jpg" alt="Teaser">
+
+# Monte Carlo Estimators for Differential Light Transport
+
+Source code of the paper ["Monte Carlo Estimators for Differential Light Transport"](http://rgl.epfl.ch/publications/Zeltner2021MonteCarlo) by [Tizian Zeltner](https://tizianzeltner.com/), [Sébastien Speierer](http://rgl.epfl.ch/people/speierers), [Iliyan Georgiev](http://www.iliyan.com/), and [Wenzel Jakob](http://rgl.epfl.ch/people/wjakob) from SIGGRAPH 2021.
+
+The implementation is based on the Mitsuba 3 renderer, see the lower part of the README.
+
+## Compiling
+
+Please see the [documentation](https://mitsuba.readthedocs.io/en/latest/src/developer_guide/compiling.html) for details on how to compile this codebase.
+
+
+## Results
+
+The `results` directory contains a set of Jupyter notebooks that reproduce some of the experiments from the paper.
+
+1. **Differential Microfacet Sampling Strategy**
+
+   This notebook creates a list of plots to illustrate the differential Microfacet sampling strategies discusses in Section 4.1 of the paper.
+   
+2. **1D Reparameterizations**
+
+   Simple 1D examples of the reparameterization ideas dicussed in Section 5 of the paper. Illustrates both the cases of ...
+      - Parameter-dependent discontinuities from moving geometry.
+      - Parameter-dependent discontinuities from static geometry in presence of attached sampling strategies.
+
+3. **Estimator comparison (simple)**
+
+   Forward and reverse mode differentiation of a simple microfacet material's roughness parameter. Compares a long list of differential estimators:
+      - Detached emitter sampling
+      - Detached BSDF sampling
+      - Attached BSDF sampling
+      
+      - Detached MIS weights, detached BSDF sampling, detached emitter sampling
+      - Attached MIS weights, attached BSDF sampling, detached emitter sampling
+      - Detached MIS weights, attached BSDF sampling, detached emitter sampling (biased!)
+      - Attached MIS weights, detached BSDF sampling, detached emitter sampling
+
+      - Detached BSDF sampling using the differential microfacet sampling strategy
+      - Detached MIS weights, detached differential microfacet BSDF sampling, detached emitter sampling
+
+4. **Estimator comparison (roughness optimization)**
+   
+   A simple gradient based optimization recovering a roughness texture from a given reference rendering. Compares three different BSDF sampling techniques under two different illumination conditions. (Similar to Figure 12 from the paper):
+   
+      - Detached BSDF sampling
+      - Attached BSDF sampling
+      - Detached BSDF sampling using the differential microfacet sampling strategy
+
+5. **Estimator comparison (Veach)**
+
+   Reproduces the (forward mode) gradient images of the classical Veach test scene from Figure 11 in the paper. Compared to the simpler test scenes above, this scene contains (static) visibility discontinuities that causes naïve attached estimators to be biased. In addition to the previously listed estimators, two additional ones involving reparameterized attached sampling are used:
+   
+      - Reparameterized attached BSDF sampling
+      - Attached MIS weights, reparameterized attached BSDF sampling, detached emitter sampling
+
+6. **Estimator comparison (attached reparameterized)**
+
+   Again illustrates the bias of attached BSDF sampling in presence of static visibility discontinuities, this time visualizing parameter gradient textures produced by reverse mode differentiation. Based on Figure 10 of the paper.
+   
+   Additionally includes a second test scene that shows the same issue for discontinous shading normals from a normal map texture.
+
+
+<br><br>
 <!-- <img src="https://github.com/mitsuba-renderer/mitsuba3/raw/master/docs/images/logo_plain.png" width="120" height="120" alt="Mitsuba logo"> -->
 
-<img src="https://raw.githubusercontent.com/mitsuba-renderer/mitsuba-data/master/docs/images/banners/banner_01.jpg"
-alt="Mitsuba banner">
+<!-- <img src="https://raw.githubusercontent.com/mitsuba-renderer/mitsuba-data/master/docs/images/banners/banner_01.jpg"
+alt="Mitsuba banner"> -->
 
 # Mitsuba Renderer 3
 
@@ -66,6 +131,7 @@ Mitsuba 3 and Dr.Jit. Beyond this you can find complete Juypter notebooks
 covering a variety of applications, how-to guides, and reference documentation
 on [readthedocs][2].
 
+<!--
 ## Installation
 
 We provide pre-compiled binary wheels via PyPI. Installing Mitsuba this way is as simple as running
@@ -114,6 +180,7 @@ mi.Bitmap(img).write('cbox.exr')
 
 Tutorials and example notebooks covering a variety of applications can be found
 in the [documentation][2].
+-->
 
 ## About
 
