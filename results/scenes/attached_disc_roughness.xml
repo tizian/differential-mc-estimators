@@ -1,0 +1,67 @@
+<scene version="2.0.0">
+
+    <integrator type="path"/>
+
+    <sensor type="perspective">
+        <string name="fov_axis" value="smaller"/>
+        <float name="near_clip" value="0.001"/>
+        <float name="far_clip" value="1000"/>
+        <float name="focus_distance" value="1000"/>
+        <float name="fov" value="60"/>
+        <transform name="to_world">
+            <lookat origin="0, 0, 2"
+                    target="0, 0, 0"
+                    up    ="0, 1, 0"/>
+            <rotate x="1" angle="-70"/>
+        </transform>
+        <sampler type="independent">
+            <integer name="sample_count" value="32"/>
+        </sampler>
+        <film type="hdrfilm">
+            <integer name="width" value="512"/>
+            <integer name="height" value="512"/>
+            <rfilter type="gaussian"/>
+            <string name="pixel_format" value="rgb"/>
+        </film>
+    </sensor>
+
+    <shape type="obj" id="plane">
+        <string name="filename" value="meshes/rounded_plane.obj"/>
+
+        <boolean name="face_normals" value="true"/>
+
+        <bsdf type="roughconductor">
+            <rgb name="specular_reflectance" value="0.8, 0.8, 0.3"/>
+
+            <texture name="alpha" type="bitmap">
+                <string name="filename" value="textures/textured_roughness.jpg"/>
+                <boolean name="raw" value="true"/>
+            </texture>
+
+            <boolean name="differential_sampling" value="true"/>
+            <boolean name="principled_roughness_mapping" value="true"/>
+            <boolean name="sample_visible" value="true"/>
+        </bsdf>
+
+        <transform name="to_world">
+            <scale x="1" y="1" z="1"/>
+            <translate z="-0.2"/>
+        </transform>
+    </shape>
+
+    <shape type="sphere">
+        <float name="radius" value="1.2"/>
+        <point name="center" value="0, 3, -1.5"/>
+
+        <bsdf type="diffuse">
+            <spectrum name="reflectance" value="0.01"/>
+        </bsdf>
+    </shape>
+
+    <emitter type="envmap">
+        <string name="filename" value="textures/envmap.exr"/>
+        <transform name="to_world">
+            <rotate y="1" angle="90"/>
+        </transform>
+    </emitter>
+</scene>

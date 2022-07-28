@@ -33,3 +33,4 @@ __pycache__
 results/.ipynb_checkpoints
 results/estimator_comparison_simple
 results/estimator_comparison_optimization
+results/estimator_comparison_attached_reparam

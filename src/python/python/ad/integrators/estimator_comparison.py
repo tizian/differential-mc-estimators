@@ -62,10 +62,57 @@ class EstimatorComparisonIntegrator(RBIntegrator):
         #       - "mis_detached_detached_diff"
         #         Detached MIS weights, detached diff. BSDF sampling, detached emitter sampling
         #
+        #       - "bs_attached_reparam"
+        #         Attached reparameterized BSDF sampling
+        #
+        #       - "mis_attached_attached_reparam"
+        #         Attached MIS weights, attached reparameterized BSDF sampling, detached emitter sampling
+        #
         self.method = props.string('method', 'none')
 
         # Hide directly visible emitters? (Only relevant in primal modes.)
         self.hide_emitters = props.get('hide_emitters', False)
+
+        # Specifies the number of auxiliary rays used to evaluate the
+        # reparameterization
+        self.reparam_rays = props.get('reparam_rays', 16)
+
+        # Specifies the von Mises Fisher distribution parameter for sampling
+        # auxiliary rays in Bangaru et al.'s [2020] parameterization
+        self.reparam_kappa = props.get('reparam_kappa', 1e5)
+
+        # Harmonic weight exponent in Bangaru et al.'s [2020] parameterization
+        self.reparam_exp = props.get('reparam_exp', 3.0)
+
+        # Enable antithetic sampling in the reparameterization?
+        self.reparam_antithetic = props.get('reparam_antithetic', False)
+
+        # Unroll the loop tracing auxiliary rays in the reparameterization?
+        self.reparam_unroll = props.get('reparam_unroll', False)
+
+        # Use naïve version of the reparameterization that falls back to
+        # detached sampling, i.e. cancelling all sample movement?
+        self.reparam_naive = props.get('reparam_naive', False)
+
+
+    def attached_reparam(self,
+                         scene: mitsuba.render.Scene,
+                         rng: mitsuba.core.PCG32,
+                         wo: mitsuba.core.Vector3f,
+                         pdf: mitsuba.core.Float,
+                         si: mitsuba.render.SurfaceInteraction3f,
+                         active: mitsuba.core.Bool):
+        """
+        Helper function for attached reparameterization
+        """
+
+        return mi.ad.reparameterize_attached_direction(scene, rng, wo, pdf, si,
+                                                       num_rays=self.reparam_rays,
+                                                       kappa=self.reparam_kappa,
+                                                       exponent=self.reparam_exp,
+                                                       antithetic=self.reparam_antithetic,
+                                                       naive=self.reparam_naive,
+                                                       active=active)
 
     def sample(self,
                mode: dr.ADMode,
@@ -75,6 +122,9 @@ class EstimatorComparisonIntegrator(RBIntegrator):
                δL: Optional[mi.Spectrum],
                state_in: Optional[mi.Spectrum],
                antithetic_pass: Optional[bool],
+               attached_reparam: Optional[
+                   Callable[[mi.Vector3f, mi.Float, mi.Bool],
+                             Tuple[mi.Vector3f, mi.Float]]],
                active: mi.Bool,
                **kwargs # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum,
@@ -527,6 +577,81 @@ class EstimatorComparisonIntegrator(RBIntegrator):
 
                     L += mis * bsdf_val / bs.pdf * emitter_val
 
+
+            elif self.method == 'bs_attached_reparam':
+                 # ------------ Attached BSDF sampling -------------------------------------------
+                 # ... but using the attached+reparameterized BSDF sampling strategy (Section 5.2)
+                 # -------------------------------------------------------------------------------
+
+                 with dr.resume_grad(when=not primal):
+                     # Use a BSDF sampling strategy, everything is attached here.
+                     bs, _ = bsdf.sample(
+                         ctx, si, sampler.next_1d(active), sampler.next_2d(active), active
+                     )
+                     active &= dr.neq(bs.pdf, 0.0)
+
+                     # Reparameterize
+                     wo_R, det_R = attached_reparam(bs.wo, bs.pdf, si, active)
+
+                     # Re-evaluate BSDF with reparam-ed direction
+                     bsdf_value = bsdf.eval(ctx, si, wo_R, active)
+
+                     ray = si.spawn_ray(si.to_world(wo_R))
+                     si_bsdf = scene.ray_intersect(ray, active)
+
+                     # Evaluate emitter, also being differentiated due to diff. `wo`
+                     delta = mi.has_flag(bs.sampled_type, mi.BSDFFlags.Delta)
+                     ds = mi.DirectionSample3f(scene, si_bsdf, si)
+                     active_b = active & dr.neq(ds.emitter, None) & ~delta
+                     emitter_val = ds.emitter.eval(si_bsdf, active_b)
+
+                     L = bsdf_value / bs.pdf * emitter_val * det_R
+
+            elif self.method == 'mis_attached_attached_reparam':
+                # ------------ MIS with attached weights and attached strategies ----------------
+                # ... but using the attached+reparameterized BSDF sampling strategy (Section 5.2)
+                # -------------------------------------------------------------------------------
+
+                with dr.resume_grad(when=not primal):
+                    # First, use an emitter sampling strategy
+                    active_e = active & mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth)
+                    ds, emitter_weight = scene.sample_emitter_direction(
+                        si, sampler.next_2d(active_e), True, active_e
+                    )
+                    active_e &= dr.neq(ds.pdf, 0.0)
+                    wo = si.to_local(ds.d)
+
+                    # Evaluate BSDF
+                    bsdf_val, bsdf_pdf = bsdf.eval_pdf(ctx, si, wo, active_e)
+                    mis = dr.select(ds.delta, 1.0, mis_weight(ds.pdf, bsdf_pdf))
+
+                    L += mis * bsdf_val * emitter_weight
+
+                    # Second, use a BSDF sampling strategy
+                    bs, _ = bsdf.sample(
+                        ctx, si, sampler.next_1d(active), sampler.next_2d(active), active
+                    )
+                    active &= dr.neq(bs.pdf, 0.0)
+
+                    # Reparameterize
+                    wo_R, det_R = attached_reparam(bs.wo, bs.pdf, si, active)
+
+                    # Re-evaluate BSDF with reparam-ed direction
+                    bsdf_value = bsdf.eval(ctx, si, wo_R, active)
+                    bsdf_pdf = bsdf.eval(ctx, si, wo_R, active)
+
+                    ray = si.spawn_ray(si.to_world(wo_R))
+                    si_bsdf = scene.ray_intersect(ray, active)
+
+                    # Evaluate emitter, also being differentiated due to diff. `wo`
+                    delta = mi.has_flag(bs.sampled_type, mi.BSDFFlags.Delta)
+                    ds = mi.DirectionSample3f(scene, si_bsdf, si)
+                    active_b = active & dr.neq(ds.emitter, None) & ~delta
+                    emitter_pdf = scene.pdf_emitter_direction(si, ds, active_b)
+                    mis = dr.select(active_b, mis_weight(bsdf_pdf, emitter_pdf), 1.0)
+                    emitter_val = ds.emitter.eval(si_bsdf, active_b)
+
+                    L += mis * bsdf_value / bs.pdf * emitter_val * det_R
 
         if not primal:
             with dr.resume_grad():

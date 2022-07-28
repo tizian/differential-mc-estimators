@@ -88,6 +88,7 @@ class ADIntegrator(mi.CppADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                attached_reparam=None,
                 antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
@@ -151,6 +152,17 @@ class ADIntegrator(mi.CppADIntegrator):
             else:
                 reparam = None
 
+            # Potentially also create a wrapper for attached reparameterization
+            if hasattr(self, 'method') and 'attached_reparam' in self.method and hasattr(self, 'attached_reparam'):
+                attached_reparam = _AttachedReparamWrapper(
+                    scene=scene,
+                    attached_reparam=self.attached_reparam,
+                    wavefront_size=sampler.wavefront_size(),
+                    seed=seed
+                )
+            else:
+                attached_reparam = None
+
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
             ray, weight, pos, det = self.sample_rays(scene, sensor,
@@ -163,6 +175,7 @@ class ADIntegrator(mi.CppADIntegrator):
                     sampler=sampler,
                     ray=ray,
                     reparam=reparam,
+                    attached_reparam=attached_reparam,
                     antithetic_pass=antithetic_pass,
                     active=mi.Bool(True)
                 )
@@ -234,6 +247,17 @@ class ADIntegrator(mi.CppADIntegrator):
             else:
                 reparam = None
 
+            # Potentially also create a wrapper for attached reparameterization
+            if hasattr(self, 'method') and 'attached_reparam' in self.method and hasattr(self, 'attached_reparam'):
+                attached_reparam = _AttachedReparamWrapper(
+                    scene=scene,
+                    attached_reparam=self.attached_reparam,
+                    wavefront_size=sampler.wavefront_size(),
+                    seed=seed
+                )
+            else:
+                attached_reparam = None
+
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
             ray, weight, pos, det = self.sample_rays(scene, sensor,
@@ -246,6 +270,7 @@ class ADIntegrator(mi.CppADIntegrator):
                     sampler=sampler,
                     ray=ray,
                     reparam=reparam,
+                    attached_reparam=attached_reparam,
                     antithetic_pass=antithetic_pass,
                     active=mi.Bool(True)
                 )
@@ -673,6 +698,17 @@ class RBIntegrator(ADIntegrator):
             else:
                 reparam = None
 
+            # Potentially also create a wrapper for attached reparameterization
+            if hasattr(self, 'method') and 'attached_reparam' in self.method and hasattr(self, 'attached_reparam'):
+                attached_reparam = _AttachedReparamWrapper(
+                    scene=scene,
+                    attached_reparam=self.attached_reparam,
+                    wavefront_size=sampler.wavefront_size(),
+                    seed=seed
+                )
+            else:
+                attached_reparam = None
+
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
             ray, weight, pos, det = self.sample_rays(scene, sensor,
@@ -688,6 +724,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                attached_reparam=None,
                 antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
@@ -761,6 +798,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=state_out,
                 reparam=reparam,
+                attached_reparam=attached_reparam,
                 antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
@@ -899,6 +937,17 @@ class RBIntegrator(ADIntegrator):
             else:
                 reparam = None
 
+            # Potentially also create a wrapper for attached reparameterization
+            if hasattr(self, 'method') and 'attached_reparam' in self.method and hasattr(self, 'attached_reparam'):
+                attached_reparam = _AttachedReparamWrapper(
+                    scene=scene,
+                    attached_reparam=self.attached_reparam,
+                    wavefront_size=sampler.wavefront_size(),
+                    seed=seed
+                )
+            else:
+                attached_reparam = None
+
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
             ray, weight, pos, det = self.sample_rays(scene, sensor,
@@ -914,6 +963,7 @@ class RBIntegrator(ADIntegrator):
                 δL=None,
                 state_in=None,
                 reparam=None,
+                attached_reparam=None,
                 antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
@@ -977,6 +1027,7 @@ class RBIntegrator(ADIntegrator):
                 δL=δL,
                 state_in=state_out,
                 reparam=reparam,
+                attached_reparam=attached_reparam,
                 antithetic_pass=antithetic_pass,
                 active=mi.Bool(True)
             )
@@ -1255,6 +1306,60 @@ class _ReparamWrapper:
         return self.reparam(self.scene, self.rng, self.params, ray,
                             depth, active)
 
+
+class _AttachedReparamWrapper:
+    """
+    This class is an implementation detail of ``ADIntegrator``, which performs
+    necessary initialization steps and subsequently wraps an attached
+    reparameterization technique. It serves the following important purposes:
+
+    1. Ensuring the availability of uncorrelated random variates.
+    2. Exposing the underlying RNG state to recorded loops.
+    """
+
+    # AttachedReparamWrapper instances can be provided as dr.Loop state
+    # variables. For this to work we must declare relevant fields
+    DRJIT_STRUCT = { 'rng' : mi.PCG32 }
+
+    def __init__(self,
+                 scene : mi.Scene,
+                 attached_reparam: Callable[
+                     [mi.Scene, mi.PCG32,
+                      mi.Vector3f,
+                      mi.Float,
+                      mi.SurfaceInteraction3f,
+                      mi.Bool],
+                      Tuple[mi.Vector3f, mi.Float]],
+                 wavefront_size : int,
+                 seed : int):
+
+        self.scene = scene
+        self.attached_reparam = attached_reparam
+
+        # Create a uniform random number generator that won't show any
+        # correlation with the main sampler. PCG32Sampler.seed() uses
+        # the same logic except for the XOR with -1
+
+        idx = dr.arange(mi.UInt32, wavefront_size)
+        tmp = dr.opaque(mi.UInt32, 0xffffffff ^ seed)
+        v0, v1 = mi.sample_tea_32(tmp, idx)
+        self.rng = mi.PCG32(initstate=v0, initseq=v1)
+
+    def __call__(self,
+                 wo: mi.Vector3f,
+                 pdf: mi.Float,
+                 si: mi.SurfaceInteraction3f,
+                 active: Union[mi.Bool, bool] = True
+    ) -> Tuple[mi.Vector3f, mi.Float]:
+        """
+        This function takes a directional sample and a boolean active mask as
+        input and returns the reparameterized ray direction and the Jacobian
+        determinant of the change of variables.
+        The sample includes both the sampled direction (`wo`) and its sampling
+        PDF (`pdf`) generated and is assume dto be the result of an attached
+        sampling technique.
+        """
+        return self.attached_reparam(self.scene, self.rng, wo, pdf, si, active)
 
 # ---------------------------------------------------------------------------
 #  Helper functions used by various differentiable integrators
