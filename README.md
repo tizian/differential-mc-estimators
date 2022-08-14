@@ -25,9 +25,11 @@ The `results` directory contains a set of Jupyter notebooks that reproduce some 
       - Parameter-dependent discontinuities from moving geometry.
       - Parameter-dependent discontinuities from static geometry in presence of attached sampling strategies.
 
-3. **Estimator comparison (simple)**
+3. **Estimator comparison (vMF conductor)**
 
-   Forward and reverse mode differentiation of a simple microfacet material's roughness parameter. Compares a long list of differential estimators:
+   Forward and reverse mode differentiation of a rough conductor roughness
+   parameter in a simple test scene with a vMF emitter.
+   Compares a long list of differential estimators:
       - Detached emitter sampling
       - Detached BSDF sampling
       - Attached BSDF sampling
@@ -40,7 +42,19 @@ The `results` directory contains a set of Jupyter notebooks that reproduce some 
       - Detached BSDF sampling using the differential microfacet sampling strategy
       - Detached MIS weights, detached differential microfacet BSDF sampling, detached emitter sampling
 
-4. **Estimator comparison (roughness optimization)**
+4. **Estimator comparison (vMF dielectric)**
+
+   Same as (3) but with a rough dielectric material instead.
+
+5. **Estimator comparison (envmap conductor)**
+
+   Same as (3) but with an environment emitter instead of the vMF.
+
+6. **Estimator comparison (envmap dielectric)**
+
+   Same as (5) but with a rough dielectric material instead.
+
+7. **Estimator comparison (roughness optimization)**
    
    A simple gradient based optimization recovering a roughness texture from a given reference rendering. Compares three different BSDF sampling techniques under two different illumination conditions. (Similar to Figure 12 from the paper):
    
@@ -48,14 +62,14 @@ The `results` directory contains a set of Jupyter notebooks that reproduce some 
       - Attached BSDF sampling
       - Detached BSDF sampling using the differential microfacet sampling strategy
 
-5. **Estimator comparison (Veach)**
+8. **Estimator comparison (Veach)**
 
    Reproduces the (forward mode) gradient images of the classical Veach test scene from Figure 11 in the paper. Compared to the simpler test scenes above, this scene contains (static) visibility discontinuities that causes naïve attached estimators to be biased. In addition to the previously listed estimators, two additional ones involving reparameterized attached sampling are used:
    
       - Reparameterized attached BSDF sampling
       - Attached MIS weights, reparameterized attached BSDF sampling, detached emitter sampling
 
-6. **Estimator comparison (attached reparameterized)**
+9. **Estimator comparison (attached reparameterized)**
 
    Again illustrates the bias of attached BSDF sampling in presence of static visibility discontinuities, this time visualizing parameter gradient textures produced by reverse mode differentiation. Based on Figure 10 of the paper.
    
